@@ -1496,12 +1496,13 @@ return ret;
 </script>
 
     <script src="./assets/02.js"></script>
-    <script src="./assets/03.js"></script>
-    <script src="./assets/04.js"></script>
+    <script src="./assets/03.js?v=20261003-1"></script>
+    <script src="./assets/04.js?v=20261003-1"></script>
 <script id="workspaceScript">
 /* Presentation only: the upstream state, controls, export and repair engine stay intact. */
 (() => {
   'use strict';
+  window.fontStudioTemplate = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
   const q = selector => document.querySelector(selector);
   const make = (tag, className, html = '') => {
     const node = document.createElement(tag); node.className = className; node.innerHTML = html; return node;
@@ -1519,16 +1520,13 @@ return ret;
   exportBar.append(q('.export-format-picker'),q('#exportTTFButton'));
   exportBar.querySelector('#exportTTFButton').textContent = '导出字体';
   const source = make('div','workspace-source','基于无异字体编辑工具 V5，字屿适配手机版布局。<br>Required Notice: Copyright 无异（小红书号 49686051226）<br><a href="https://fonteditor.692718.xyz/" target="_blank" rel="noopener">原项目</a> · <button class="btn btn-sm btn-outline" onclick="openLicense()">许可与来源</button>');
-  const legacy = make('a','workspace-legacy','试读、TTC 与旧版工具 ↗<small>多字体试读 · TTC 合并拆分 · 标点间距 · 旧版配置</small>');
-  legacy.href = './legacy.html'; legacy.target = '_blank'; legacy.rel = 'noopener';
-  drawerBody.append(legacy);
   const logs = make('details','workspace-details','<summary>处理记录</summary>'); logs.append(q('#statusLog')); drawerBody.append(logs,source);
   oldTitle.remove();
   const oldFooter = app.querySelector('.footer'); if (oldFooter) oldFooter.remove();
 
   const settings = make('div','modal-overlay workspace-preview-settings'); settings.id = 'workspacePreviewSettings';
   settings.setAttribute('role','dialog'); settings.setAttribute('aria-modal','true'); settings.setAttribute('aria-labelledby','workspacePreviewTitle');
-  settings.innerHTML = '<div class="modal"><div class="workspace-dialog-head"><h2 id="workspacePreviewTitle">预览设置</h2><button class="workspace-close" aria-label="关闭预览设置">×</button></div><div id="workspaceTextSlot"></div><div class="ctrl-row"><label for="workspaceZoom">显示缩放</label><input type="range" id="workspaceZoom" min="50" max="200" step="10" value="100"><output id="workspaceZoomValue">100%</output></div><p class="workspace-hint">缩放只影响屏幕显示。红线标记原始笔画上下沿，蓝线标记修改后的上下沿；红线为参考，允许超出。长段落可以在预览中横向、纵向滑动。</p><div class="modal-actions"><button class="btn btn-primary" id="workspacePreviewDone">完成</button></div></div>';
+  settings.innerHTML = '<div class="modal"><div class="workspace-dialog-head"><h2 id="workspacePreviewTitle">预览设置</h2><button class="workspace-close" aria-label="关闭预览设置">×</button></div><div id="workspaceTextSlot"></div><div class="ctrl-row"><label for="workspaceZoom">显示缩放</label><input type="range" id="workspaceZoom" min="50" max="200" step="10" value="100"><output id="workspaceZoomValue">100%</output></div><p class="workspace-hint">缩放只影响屏幕显示。红线标记原始笔画上下沿，蓝线标记修改后的上下沿；红线为参考，允许超出。长段落自动换行，可在预览中纵向滑动；预览仅显示容量范围内的开头，导出不受影响。</p><div class="modal-actions"><button class="btn btn-primary" id="workspacePreviewDone">完成</button></div></div>';
   document.body.append(settings);
   q('#workspaceTextSlot').append(q('.preview-input-row'));
   q('#previewText').value = '她把书翻到那一页。\nAa Bb Cc 0123 ，。？！';

@@ -54,8 +54,10 @@
             if (v5SfntTags(buffer).has('fvar')) logStatus(`ℹ️ “${file.name}”是可变字体：本工具取它默认那一档的字形，不会按轴实例化`, 'info');
             return { name: file.name || '未命名字体.ttf', type: v5FontType(buffer, file.name), buffer, font };
         }
-        function v5ApplyMainFont(record) {
-            state.font = record.font || opentype.parse(record.buffer);
+        function v5ApplyMainFont(record, reset = false) {
+            const font = record.font || opentype.parse(record.buffer);
+            if (reset) resetFontEdits();
+            state.font = font;
             state.fontBuffer = record.buffer;
             state.fontType = record.type || v5FontType(record.buffer, record.name);
             state.fontName = record.name || `replacement-result.${state.fontType}`;
@@ -63,6 +65,7 @@
             renderAll();
             renderSwapFontOptions();
             v5RefreshSpecificTargets();
+            v5VfAfterLoad(record.buffer, false);
         }
         // 一种语言可能同时写多种文字（日语＝平假名＋片假名＋汉字，韩语＝谚文＋汉字），这里给出它的文字集合
         function v5LanguageScripts(code) {
@@ -256,7 +259,7 @@
         function clearReplacementTarget() { state.replacementTarget = null; renderReplacementTarget(); v5RefreshSpecificTargets(); }
         function setReplacementTargetAsMain() {
             if (!state.replacementTarget) return alert('请先选择被替换字体');
-            v5ApplyMainFont(state.replacementTarget); logStatus('✅ 已把被替换字体设为主页面字体', 'success');
+            v5ApplyMainFont(state.replacementTarget, true); logStatus('✅ 已把被替换字体设为主页面字体', 'success');
         }
         function openFontImportModal() { $('fontImportModal').classList.add('active'); }
         function closeFontImportModal() { $('fontImportModal').classList.remove('active'); }
@@ -476,6 +479,7 @@
             glyph.unicode = (Array.isArray(glyph.unicode) ? glyph.unicode : [glyph.unicode]).filter(x => x !== cp && x !== undefined);
         }
         async function v5BuildReplacedBuffer(target, sources) {
+            if (v5SfntTags(target.buffer).has('fvar')) throw new Error('请先把被替换的可变字体固化为静态字体');
             const core = await loadCore();
             const targetEditor = core.createFont(target.buffer, { type: target.type, hinting: true, kerning: true });
             const targetObject = targetEditor.get();
@@ -514,8 +518,8 @@
                             layerClones.push(v5CloneScaledGlyph(glyph, null, ratio, `${baseClone.name}.color${i + 1}`));
                         }
                     }
-                    v5DetachCodePoint(targetObject, targetMap, cp);
-                    const newIndex = targetObject.glyf.length; targetObject.glyf.push(baseClone); targetMap.set(cp, newIndex);
+                    const newIndex = installFontGlyph(targetObject, cp, baseClone, target.buffer); targetMap.set(cp, newIndex);
+                    colorEntries = colorEntries.filter(e => e.baseGlyphId !== newIndex);
                     if (sourceEntry) {
                         const layerGlyphIds = layerClones.map(g => { const gid = targetObject.glyf.length; targetObject.glyf.push(g); return gid; });
                         const sourcePalette = sourceColor.cpal.palettes[0];
@@ -531,6 +535,7 @@
                 }
             }
             if (!replaced && !added) throw new Error('没有找到可替换的字符：请先输入字符，或勾选数字／语言');
+            if (targetObject.glyf.length > 65535) throw new Error('字形数量超过 TTF 上限');
             let buffer = targetEditor.write({ type: 'ttf', hinting: true, kerning: true });
             buffer = appendTables(buffer, [{ tag: 'cmap', data: buildCmapTable(targetObject.glyf) }]);
             if (copiedColor) {
@@ -542,25 +547,30 @@
                 // fonteditor-core 不会写回彩色表；没迁入新彩图时把目标字体原表逐字节放回去。
                 buffer = appendTables(buffer, v5RawColorTables(target.buffer, new Set(), true));
             }
+            buffer = finalizeGeneratedFont(buffer, target.buffer);
             return { buffer, replaced, added, skipped };
         }
         async function executeFontReplacement(btn = null, ask = true, auto = false) {
             if (!state.replacementTarget) return alert('请先选择被替换字体');
             if (!state.replacementFonts.length) return alert('请至少添加一个替换字体');
             if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
-            const wasMain = state.replacementTarget.buffer === state.fontBuffer;
+            const targetAtStart = state.replacementTarget;
+            const wasMain = targetAtStart.buffer === state.fontBuffer;
+            const unlock = v5LockEditorForVfExport();
             try {
                 const result = await v5BuildReplacedBuffer(state.replacementTarget, state.replacementFonts);
+                if (state.replacementTarget !== targetAtStart) throw new Error('替换目标已更换，旧任务已停止');
                 const nextBuffer = result.buffer.slice ? result.buffer.slice(0) : result.buffer;
                 state.replacementTarget = { ...state.replacementTarget, buffer: nextBuffer, type: 'ttf', font: opentype.parse(nextBuffer), name: state.replacementTarget.name.replace(/\.otf$/i, '.ttf') };
                 state.replacementDirty = false;
                 renderReplacementTarget();
                 logStatus(`${auto ? 'ℹ️ 导出前已自动应用字体替换' : '✅ 字体替换完成'}：替换 ${result.replaced} 个，新增 ${result.added} 个${result.skipped ? `，源字体缺少并跳过 ${result.skipped} 个` : ''}`, 'success');
                 if (wasMain) v5ApplyMainFont(state.replacementTarget);
-                else if (ask && confirm('字体替换完成。是否把这个被替换字体作为主页面导入字体？')) v5ApplyMainFont(state.replacementTarget);
+                else if (ask && confirm('字体替换完成。是否把这个被替换字体作为主页面导入字体？')) v5ApplyMainFont(state.replacementTarget, true);
+                else if (auto && !wasMain) return false;
                 return true;
             } catch (e) { alert(`字体替换失败：${e.message}`); logStatus(`❌ 字体替换失败：${e.message}`, 'error'); return false; }
-            finally { if (btn) { btn.disabled = false; btn.textContent = '执行字体替换'; } }
+            finally { unlock(); if (btn) { btn.disabled = false; btn.textContent = '执行字体替换'; } }
         }
         // 选好字体／字符但还没点“执行字体替换”时，下载与导出会先把替换补上，避免导出未替换的旧字体
         // 没有任何可命中的字符时不视为待办：直接放行，不能因为替换无事可做就让导出失败
@@ -664,6 +674,7 @@
             return confirm(`执行后${detail}，确定要继续吗？`);
         }
         async function v5BuildSwappedBuffer(item, map) {
+            if (v5SfntTags(item.buffer).has('fvar')) throw new Error('请先把可变字体固化为静态字体再互换');
             const core = await loadCore();
             const editor = core.createFont(item.buffer, { type: item.type, hinting: true, kerning: true });
             const object = editor.get(), glyphMap = v5GlyphMap(object);
@@ -680,27 +691,36 @@
             const snapshots = new Map([...new Set(map.values())].map(ch => [ch, v5CloneScaledGlyph(object.glyf[glyphMap.get(ch.codePointAt(0))], ch.codePointAt(0), 1)]));
             const sourceColorEntries = new Map([...new Set(map.values())].map(ch => [ch, color?.version === 0 ? color.entries.get(glyphMap.get(ch.codePointAt(0))) : null]));
             const newBaseIndices = new Map();
+            const swappedColorLayers = new Map();
+            for (const [ch, entry] of sourceColorEntries) if (entry) {
+                const ids = entry.layerGlyphIds.map(lid => {
+                    if (object.glyf[lid]?.compound) editor.getHelper().compound2simple([lid]);
+                    const clone = v5CloneScaledGlyph(object.glyf[lid], null, 1);
+                    const id = object.glyf.length; object.glyf.push(clone); return id;
+                });
+                swappedColorLayers.set(ch, ids);
+            }
             for (const [targetChar, sourceChar] of map) {
                 const cp = targetChar.codePointAt(0), existed = glyphMap.has(cp);
-                v5DetachCodePoint(object, glyphMap, cp);
                 const clone = v5CloneScaledGlyph(snapshots.get(sourceChar), cp, 1);
-                const index = object.glyf.length; object.glyf.push(clone); glyphMap.set(cp, index); newBaseIndices.set(targetChar, index);
+                const index = installFontGlyph(object, cp, clone, item.buffer); glyphMap.set(cp, index); newBaseIndices.set(targetChar, index);
                 if (!existed) logStatus(`ℹ️ 字符“${targetChar}”原来不存在，已新增`, 'info');
             }
+            if (object.glyf.length > 65535) throw new Error('字形数量超过 TTF 上限');
             let buffer = editor.write({ type: 'ttf', hinting: true, kerning: true });
             buffer = appendTables(buffer, [{ tag: 'cmap', data: buildCmapTable(object.glyf) }]);
             if (color?.version === 0) {
-                const entries = [...color.entries.values()].filter(e => (object.glyf[e.baseGlyphId]?.unicode || []).length).map(e => ({ ...e, layerGlyphIds: [...e.layerGlyphIds], paletteIndices: [...e.paletteIndices] }));
+                const entries = [...color.entries.values()].filter(e => ![...newBaseIndices.values()].includes(e.baseGlyphId)).map(e => ({ ...e, layerGlyphIds: [...e.layerGlyphIds], paletteIndices: [...e.paletteIndices] }));
                 for (const [targetChar, sourceChar] of map) {
                     const sourceEntry = sourceColorEntries.get(sourceChar); if (!sourceEntry) continue;
-                    entries.push({ baseGlyphId: newBaseIndices.get(targetChar), layerGlyphIds: [...sourceEntry.layerGlyphIds], paletteIndices: [...sourceEntry.paletteIndices] });
+                    entries.push({ baseGlyphId: newBaseIndices.get(targetChar), layerGlyphIds: [...swappedColorLayers.get(sourceChar)], paletteIndices: [...sourceEntry.paletteIndices] });
                 }
                 if (entries.length) {
                     const cpal = readTableBytes(item.buffer, 'CPAL'); if (!cpal) throw new Error('这个彩色字体缺少 CPAL 调色板，已阻断互换');
                     buffer = appendTables(buffer, [{ tag: 'COLR', data: buildColrV0Table(entries) }, { tag: 'CPAL', data: cpal }]);
                 }
             } else buffer = appendTables(buffer, v5RawColorTables(item.buffer, new Set(), true));
-            return buffer;
+            return finalizeGeneratedFont(buffer, item.buffer);
         }
         async function v5CommitSwap(target, map) {
             if (!target) return false;
@@ -1015,6 +1035,7 @@
         }
         // 字体载入后调用：是可变字体就亮出入口并打开面板（openPanel=false 时只亮入口，用于配置恢复流程）
         async function v5VfAfterLoad(buffer, openPanel = true) {
+            if (state.fontBuffer !== buffer) return;
             state.vfSource = null; state.vfStaticized = null;
             const btn = $('vfPanelBtn'); if (btn) btn.style.display = 'none';
             const gate = v5VfGate(v5SfntTags(buffer));
@@ -1022,6 +1043,7 @@
             if (!gate.ok) { logStatus(`⚠️ ${gate.reason}`, 'error'); alert(gate.reason); return; }
             try {
                 const kit = await loadVfKit();
+                if (state.fontBuffer !== buffer) return;
                 const base = kit.create(new Uint8Array(buffer.slice(0)));
                 const axes = base.variationAxes || {};
                 if (!Object.keys(axes).length) throw new Error('读不到可变轴');
@@ -1032,6 +1054,7 @@
                 logStatus(`🎚️ 这是可变字体：${Object.keys(axes).length} 条轴、${Object.keys(state.vfSource.instances).length} 个命名实例。请先在顶栏「🎚️ 可变字体」里选好一档固化成静态字体，再编辑与导出。`, 'success');
                 if (openPanel) openVfPanel();
             } catch (e) {
+                if (state.fontBuffer !== buffer) return;
                 state.vfSource = null;
                 logStatus(`⚠️ 可变字体读取失败：${e.message}（已按普通字体继续）`, 'error');
             }
@@ -1135,70 +1158,30 @@
             }
             ctx.fill('nonzero');
         }
-        // 固化：fontkit 取按轴轮廓与度量 → 覆盖 fonteditor-core 的 glyf → 写普通 TTF（天然不含 fvar/gvar/HVAR）
+        // 使用 FontTools 同步实例化 gvar/HVAR/MVAR 与可变 GPOS；保留原布局与彩色表。
         async function v5VfSolidify(FeC, buffer, coords, note) {
-            const kit = await loadVfKit();
-            // 复用载入时解析好的 base（CJK VF 有 20MB+，再解析一遍纯属浪费；同一份 buffer）
-            const base = (state.vfSource && state.vfSource.base) || kit.create(new Uint8Array(buffer.slice(0)));
-            const vf = v5VfVariation(base, coords);
-            const fontObj = FeC.createFont(buffer);
-            const data = fontObj.get();
-            const total = data.glyf.length;
-            for (let gid = 0; gid < total; gid++) {
-                const g = data.glyf[gid];
-                if (!g) continue;
-                const vg = vf.getGlyph(gid);
-                let raw = null;
-                try { raw = vg._decode(); } catch (_) { raw = null; }
-                let hasInk = false, x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-                if (raw && raw.points && raw.points.length) {
-                    // 简单字：用插值后的**原始点结构**。走 vg.path 会把省略的 on-curve 点显式化，隐含点取整后差 0.5 单位
-                    let cur = null; const contours = [];
-                    for (const p of raw.points) {
-                        if (!cur) { cur = []; contours.push(cur); }
-                        cur.push({ x: Math.round(p.x), y: Math.round(p.y), onCurve: !!p.onCurve });
-                        if (p.endContour) cur = null;
-                    }
-                    g.contours = contours;
-                    if (g.compound) { delete g.compound; delete g.compoundGlyf; }
-                    x0 = Infinity; y0 = Infinity; x1 = -Infinity; y1 = -Infinity;
-                    for (const c of contours) for (const p of c) {
-                        if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
-                        if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
-                    }
-                    g.xMin = x0; g.yMin = y0; g.xMax = x1; g.yMax = y1;
-                    hasInk = true;
-                } else {
-                    // 复合字：fontkit 自带 _getContours() 会递归解析分量并应用目标实例变换，同时保留原始点结构。
-                    // 不能绕成 path 再反推 contours：那会新增隐式点并重建中点，6253 字实测最大 bbox 偏差 11。
-                    const sourceContours = raw && raw.numberOfContours < 0 ? vg._getContours() : [];
-                    if (sourceContours.length) {
-                        const contours = sourceContours.map(contour => contour.map(p => ({ x: Math.round(p.x), y: Math.round(p.y), onCurve: !!p.onCurve })));
-                        g.contours = contours;
-                        if (g.compound) { delete g.compound; delete g.compoundGlyf; }
-                        x0 = Infinity; y0 = Infinity; x1 = -Infinity; y1 = -Infinity;
-                        for (const c of contours) for (const p of c) {
-                            if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x;
-                            if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y;
-                        }
-                        g.xMin = Math.round(x0); g.yMin = Math.round(y0); g.xMax = Math.round(x1); g.yMax = Math.round(y1);
-                        hasInk = true;
-                    } else {
-                        g.contours = []; g.xMin = g.yMin = g.xMax = g.yMax = 0;
-                    }
-                }
-                // 度量：advance 只信按轴插值过的 advanceWidth；lsb 用 gvar 的 phantom point（xMin + round(-pp0.x)）
-                if (isFinite(vg.advanceWidth)) g.advanceWidth = Math.round(vg.advanceWidth);
-                const pp = raw && raw.phantomPoints;
-                if (pp && pp.length >= 2 && hasInk) g.leftSideBearing = g.xMin + Math.round(-pp[0].x);
-                if (gid % 2000 === 0) {
-                    note(`正在固化成静态字体… ${gid} / ${total}（大字体可能要一两分钟，请不要关页面）`);
-                    await new Promise(r => setTimeout(r, 0));   // 让出主线程，进度才动得起来
-                }
+            note('正在启动本地字体引擎…');
+            const py = await loadVfCompiler();
+            py.FS.writeFile('/static-source.ttf', new Uint8Array(buffer));
+            py.globals.set('static_coords_json', JSON.stringify(coords));
+            try {
+                note('正在固化轮廓、度量和排版规则…');
+                await py.runPythonAsync(`
+import json
+from fontTools.ttLib import TTFont
+from fontTools.varLib.instancer import instantiateVariableFont
+font = TTFont('/static-source.ttf', recalcTimestamp=False)
+coords = json.loads(static_coords_json)
+limits = {axis.axisTag: float(coords.get(axis.axisTag, axis.defaultValue)) for axis in font['fvar'].axes}
+font = instantiateVariableFont(font, limits, inplace=True)
+if 'DSIG' in font: del font['DSIG']
+font.save('/static-output.ttf')
+`);
+                return validateGeneratedFont(py.FS.readFile('/static-output.ttf').slice().buffer);
+            } finally {
+                for (const file of ['/static-source.ttf','/static-output.ttf']) { try { py.FS.unlink(file); } catch (_) {} }
+                py.globals.delete('static_coords_json');
             }
-            note('正在写盘…');
-            await new Promise(r => setTimeout(r, 0));
-            return fontObj.write({ type: 'ttf' });
         }
         async function applyVfStaticize() {
             if (!state.vfSource) { closeVfPanel(); return; }
@@ -1206,6 +1189,7 @@
             // 异步固化期间允许用户导入/恢复别的字体；提交前必须确认仍是同一份源状态，禁止旧任务覆盖新字体。
             const sourceBuffer = state.fontBuffer, sourceVf = state.vfSource;
             const note = msg => { $('vfProgress').textContent = msg; };
+            const unlock = v5LockEditorForVfExport();
             btn.disabled = true;
             try {
                 const FeC = await loadCore();
@@ -1236,7 +1220,7 @@
                 note('');
                 logStatus(`❌ 固化失败：${e.message}（字体未改动）`, 'error');
                 alert(`固化失败：${e.message}`);
-            } finally { btn.disabled = false; }
+            } finally { unlock(); btn.disabled = false; }
         }
 
         function v5InitFeatures() {

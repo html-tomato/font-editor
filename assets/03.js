@@ -91,43 +91,21 @@
         function applyColorStyle(color, hue, brightness, fine) {
             let { r, g, b } = color;
             if (hue) {
-                const h = hue % 360;
-                const rn = r / 255, gn = g / 255, bn = b / 255;
-                const mx = Math.max(rn, gn, bn), mn = Math.min(rn, gn, bn);
-                const l = (mx + mn) / 2;
-                let hh = 0, s = 0;
-                if (mx !== mn) {
-                    const d = mx - mn;
-                    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
-                    if (mx === rn) hh = (gn - bn) / d + (gn < bn ? 6 : 0);
-                    else if (mx === gn) hh = (bn - rn) / d + 2;
-                    else hh = (rn - gn) / d + 4;
-                    hh /= 6;
-                }
-                hh = (hh + h / 360) % 1;
-                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-                const p = 2 * l - q;
-                const hue2rgb = (pp, qq, t) => {
-                    if (t < 0) t += 1;
-                    if (t > 1) t -= 1;
-                    if (t < 1 / 6) return pp + (qq - pp) * 6 * t;
-                    if (t < 1 / 2) return qq;
-                    if (t < 2 / 3) return pp + (qq - pp) * (2 / 3 - t) * 6;
-                    return pp;
-                };
-                r = hue2rgb(p, q, hh + 1 / 3) * 255;
-                g = hue2rgb(p, q, hh) * 255;
-                b = hue2rgb(p, q, hh - 1 / 3) * 255;
+                const angle = hue * Math.PI / 180, c = Math.cos(angle), t = Math.sin(angle);
+                const nr = (.213 + .787*c - .213*t)*r + (.715 - .715*c - .715*t)*g + (.072 - .072*c + .928*t)*b;
+                const ng = (.213 - .213*c + .143*t)*r + (.715 + .285*c + .140*t)*g + (.072 - .072*c - .283*t)*b;
+                const nb = (.213 - .213*c - .787*t)*r + (.715 - .715*c + .715*t)*g + (.072 + .928*c + .072*t)*b;
+                r = clamp(nr,0,255); g = clamp(ng,0,255); b = clamp(nb,0,255);
             }
             if (brightness !== undefined && brightness !== 100) {
                 const f = brightness / 100;
-                r *= f; g *= f; b *= f;
+                r = clamp(r*f,0,255); g = clamp(g*f,0,255); b = clamp(b*f,0,255);
             }
             const ct = (fine ?? 50) / 50;
             if (ct !== 1) {
-                r = (r - 128) * ct + 128; g = (g - 128) * ct + 128; b = (b - 128) * ct + 128;
+                r = (r - 127.5) * ct + 127.5; g = (g - 127.5) * ct + 127.5; b = (b - 127.5) * ct + 127.5;
             }
-            return { r: Math.round(clamp(r, 0, 255)), g: Math.round(clamp(g, 0, 255)), b: Math.round(clamp(b, 0, 255)) };
+            return { r: Math.round(clamp(r, 0, 255)), g: Math.round(clamp(g, 0, 255)), b: Math.round(clamp(b, 0, 255)), a: color.a ?? 255 };
         }
 
         function escapeAttribute(value) {
@@ -323,12 +301,12 @@
             const previewShift = Math.max(0, ...styles.map(s => Math.abs(Number(s.baseline) || 0)));
             const previewLines = String(text).split('\n').length;
             const fontHeightRatio = font ? ((font.ascender || 800) + Math.abs(font.descender || -200)) / (font.unitsPerEm || 1000) : 1.2;
-            const h = Math.ceil(Math.max((rect.height || 100) / viewScale, previewLines * previewSize * Math.max(fontHeightRatio, Number(state.global.lineHeight) || 1.4) + previewShift * 2 + 48));
+            const desiredHeight = Math.ceil(Math.max((rect.height || 100) / viewScale, previewLines * previewSize * Math.max(fontHeightRatio, Number(state.global.lineHeight) || 1.4) + previewShift * 2 + 48));
             if (!font || text === '') {
                 canvas.width = minWidth;
-                canvas.height = h;
+                canvas.height = Math.min(4096, desiredHeight);
                 ctx.fillStyle = '#ffffff';
-                ctx.fillRect(0, 0, minWidth, h);
+                ctx.fillRect(0, 0, minWidth, canvas.height);
                 return;
             }
 
@@ -337,7 +315,7 @@
             const upm = font.unitsPerEm || 1000;
             const ascentRatio = (font.ascender ?? upm * 0.8) / upm;
             const descentRatio = Math.abs(font.descender ?? -upm * 0.2) / upm;
-            const lines = String(text).split('\n').map(line => [...line]);
+            const lines = String(text).slice(0, 2000).split('\n').map(line => [...line]);
             const excludeCodes = v5GlobalExcludeCodes();
 
             function recordFor(ch) {
@@ -367,29 +345,41 @@
                     catch (_) { width = size * 0.6; }
                 }
                 return { ch: drawChar, glyph, drawFont, style, size,
-                    advance: Math.max(4, width + (Number(style.letterSpacing) || 0)) };
+                    advance: Math.max(48 / upm, width + (Number(style.letterSpacing) || 0)) };
             }
 
-            const rows = lines.map(line => {
-                const records = line.map(recordFor);
-                // 行高/基线只由「全局」设置决定：个别字符改大小等不会挪动同排其它未改动字符的位置，
-                // 未调整的字于是永远卡在红线之间（其最下端搭在下红线）；全局上浮/下沉改了才整体出线。
-                const ascent = ascentRatio * (Number(gs.size) || 48);
-                const descent = descentRatio * (Number(gs.size) || 48);
-                const contentHeight = ascent + descent;
-                const boxHeight = Math.max(contentHeight, (Number(gs.size) || 48) * (Number(gs.lineHeight) || 1.4));
-                return { records, ascent, descent, contentHeight, boxHeight,
-                    width: records.reduce((sum, r) => sum + r.advance, 0) };
-            });
-            const w = Math.max(minWidth, Math.ceil(Math.max(0, ...rows.map(row => row.width)) + 24));
+            // 固定画布宽度，长文本按可见宽度换行；不创建数万像素宽的移动端画布。
+            const w = Math.min(2048, Math.max(96, minWidth));
+            const rows = [];
+            const metrics = previewLineMetrics(font, gs);
+            for (const line of lines) {
+                let records = [], width = 0;
+                const pushRow = () => { rows.push({ records, width, ...metrics }); records = []; width = 0; };
+                const inputRecords = line.map(recordFor);
+                for (let i = 0; i < inputRecords.length; i++) {
+                    const r = inputRecords[i], next = inputRecords[i + 1];
+                    if (!r.glyph && next && !next.glyph && r.drawFont === next.drawFont) {
+                        try {
+                            // 字形缩放不改写原 GPOS/kern 数值；预览也使用原字号下的字偶距。
+                            const kern = r.drawFont.getKerningValue(r.drawFont.charToGlyph(r.ch), r.drawFont.charToGlyph(next.ch));
+                            r.advance = Math.max(48 / upm, r.advance + kern * 48 / (r.drawFont.unitsPerEm || upm));
+                        } catch (_) {}
+                    }
+                    if (records.length && width + r.advance > w - 24) pushRow();
+                    records.push(r); width += r.advance;
+                }
+                pushRow();
+            }
+            const totalHeight = rows.length * metrics.boxHeight;
+            const h = Math.min(4096, Math.floor(4 * 1024 * 1024 / w), Math.ceil(Math.max(desiredHeight, totalHeight + 48)));
             canvas.width = w;
             canvas.height = h;
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, 0, w, h);
-            const totalHeight = rows.reduce((sum, row) => sum + row.boxHeight, 0);
-            let rowTop = (h - totalHeight) / 2;
+            const visibleRows = rows.slice(0, Math.max(1, Math.floor((h - 24) / metrics.boxHeight)));
+            let rowTop = Math.max(24, (h - totalHeight) / 2);
 
-            for (const row of rows) {
+            for (const row of visibleRows) {
                 const baselineY = rowTop + (row.boxHeight - row.contentHeight) / 2 + row.ascent;
                 let x = (w - row.width) / 2;
                 for (const record of row.records) {
@@ -509,7 +499,15 @@
             ctxMod.restore();
         }
 
+        let previewFrame = 0;
         function renderAll() {
+            if (previewFrame) return;
+            previewFrame = requestAnimationFrame(() => {
+                previewFrame = 0;
+                renderAllNow();
+            });
+        }
+        function renderAllNow() {
             if (!state.font) {
                 drawPlaceholder(ctxOrig, previewOrig, uiText('请导入字体'), '#f8fafc');
                 drawPlaceholder(ctxMod, previewMod, uiText('请导入字体'), '#f8fafc');
@@ -528,20 +526,46 @@
             if (showBounds) drawBoundsLines(origInk, inkBoundsY(ctxMod, previewMod));
         }
 
+        function previewLineMetrics(font, settings) {
+            const upm = font.unitsPerEm || 1000;
+            const ascent = (font.ascender ?? upm * .8) * 48 / upm;
+            const descent = Math.abs(font.descender ?? -upm * .2) * 48 / upm;
+            const sourceGap = Number(font.tables?.hhea?.lineGap || 0) * 48 / upm;
+            const boxHeight = settings.lineHeight === 1.4 ? ascent + descent + sourceGap : settings.lineHeight * 48;
+            return { ascent, descent, contentHeight: ascent + descent, boxHeight: Math.max(1, boxHeight) };
+        }
+
+        function resetFontEdits() {
+            closeOriginEdit();
+            state.global = { ...GLOBAL_EXCLUDE_DEFAULTS, exclude: '' };
+            state.specific = {}; state.glyphs = []; state._glyphId = 0;
+            state.replacementTarget = null; state.replacementFonts = [];
+            state.replacementDirty = false;
+            v5SwapRows = [{ from: '', to: '' }]; v5SwapApplied = {};
+            v5ResetMainSwapUndo('已载入新字体');
+            syncGlobalControls(); renderGlyphList(); renderReplacementFonts();
+            renderReplacementTarget(); renderSwapRows();
+        }
+
         // ===== 字体加载 =====
+        let fontImportTicket = 0;
         const fileInput = $('fontFileInput');
         fileInput.addEventListener('change', function(e) {
             const file = e.target.files[0];
+            e.target.value = '';
+            const ticket = ++fontImportTicket;
             if (!file) { logStatus('未选择文件', 'error'); return; }
             logStatus(`📁 选择了文件: ${file.name} (${(file.size/1024).toFixed(1)} KB)`);
             if (typeof opentype === 'undefined') { logStatus('❌ opentype库未加载', 'error'); return; }
             const reader = new FileReader();
             reader.onload = function(ev) {
+                if (ticket !== fontImportTicket) return;
                 try {
                     const buffer = ev.target.result;
                     const outlineReason = v5NoVectorOutlineReason(buffer);
                     if (outlineReason) throw new Error(outlineReason);
                     const font = opentype.parse(buffer);
+                    resetFontEdits();
                     state.font = font;
                     state.fontBuffer = buffer;
                     state.fontType = v5FontType(buffer, file.name);
@@ -586,6 +610,7 @@
                 if (isNum) { const min = parseFloat(slider.min),
                         max = parseFloat(slider.max); if (!isNaN(min) && !isNaN(max)) v = clamp(v, min, max); }
                 slider.value = v;
+                this.value = v;
                 if (val) val.textContent = ctrlValText(stateKey, v);
                 if (isGlobal) { state.global[stateKey] = v; }
                 renderAll();
@@ -2526,7 +2551,7 @@
                 (g.lineHeight !== ADJUSTMENT_DEFAULTS.lineHeight)) return true;
             if (specificHasWritable()) return true;
             if (state.glyphs.length > 0) return true;
-            if (hasWritableColor()) return true;
+            if (hasWritableColor() || hasColorOnlyChanges()) return true;
             return false;
         }
 
@@ -2800,6 +2825,7 @@
                 totalLayers += e.layerGlyphIds.length;
             }
             const nBase = entries.length;
+            if (nBase > 65535 || totalLayers > 65535) throw new Error('彩色图层数量超过 TTF 上限');
             const colr = new Uint8Array(14 + nBase * 6 + totalLayers * 4);
             const cv = new DataView(colr.buffer);
             cv.setUint16(0, 0); cv.setUint16(2, nBase); cv.setUint32(4, 14);
@@ -2896,6 +2922,7 @@
             const m = lists.length;
             // CPAL 只有一个 numPaletteEntries，各板必须等长：短的补黑
             const n = Math.max(1, ...lists.map(p => p.length));
+            if (n * m > 65535) throw new Error('彩色调色板容量超过 TTF 上限');
             const colorOffset = 12 + m * 2;
             const cpal = new Uint8Array(colorOffset + n * m * 4);
             const pv = new DataView(cpal.buffer);
@@ -3116,6 +3143,7 @@
                 }
             }
             if (changed) {
+                delete g.instructions; // 原 hint 程序引用旧坐标，几何变化后不可继续套用。
                 let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
                 for (const contour of g.contours) for (const p of contour) {
                     if (p.x < xMin) xMin = p.x;
@@ -3132,6 +3160,104 @@
                 changed = true;
             }
             return changed;
+        }
+
+        // 原编号上的轮廓替换不会使 GSUB/GPOS/kern 指向失效；别删除原布局表。
+        function cloneFontGlyph(glyph) {
+            return { ...glyph, unicode: [...(glyph.unicode || [])],
+                contours: glyph.contours?.map(c => c.map(p => ({ ...p }))),
+                glyfs: glyph.glyfs?.map(c => ({ ...c, transform: c.transform ? { ...c.transform } : c.transform })) };
+        }
+        function assertSafeAliasSplit(source, codes) {
+            if (['GSUB','GPOS','kern','kerx','morx','mort'].some(tag => readTableBytes(source, tag))) {
+                throw new Error(`字符 ${codes.map(cp => String.fromCodePoint(cp)).join('、')} 共用同一字形且带排版规则，当前无法安全分别调整，请给它们使用相同设置`);
+            }
+        }
+        function installFontGlyph(object, cp, replacement, source) {
+            const index = object.glyf.findIndex(g => (g.unicode || []).includes(cp));
+            const previous = object.glyf[index];
+            replacement.unicode = [cp];
+            if (previous && previous.unicode.length === 1) {
+                // 若复合字仍引用旧轮廓，把它独立保存，原编号留给该字符的排版规则。
+                const dependents = object.glyf.filter(g => g.glyfs?.some(c => c.glyphIndex === index));
+                if (dependents.length) {
+                    const preserved = cloneFontGlyph(previous); preserved.unicode = [];
+                    const id = object.glyf.length; object.glyf.push(preserved);
+                    for (const g of dependents) for (const component of g.glyfs) if (component.glyphIndex === index) component.glyphIndex = id;
+                }
+                object.glyf[index] = replacement;
+                return index;
+            }
+            if (previous) {
+                assertSafeAliasSplit(source, previous.unicode);
+                previous.unicode = previous.unicode.filter(c => c !== cp);
+            }
+            const id = object.glyf.length; object.glyf.push(replacement); return id;
+        }
+        function preserveCmapVariations(buffer, source) {
+            const src = readTableBytes(source, 'cmap'), dst = readTableBytes(buffer, 'cmap');
+            if (!src || !dst) return buffer;
+            const sv = new DataView(src.buffer, src.byteOffset, src.byteLength), dv = new DataView(dst.buffer, dst.byteOffset, dst.byteLength);
+            const extra = [];
+            for (let i = 0; i < sv.getUint16(2); i++) {
+                const pos = 4 + i * 8, off = sv.getUint32(pos + 4);
+                if (off + 6 <= src.length && sv.getUint16(off) === 14) {
+                    const length = sv.getUint32(off + 2);
+                    if (off + length > src.length) throw new Error('源字体的 Unicode 变体表越界');
+                    extra.push({ platform: sv.getUint16(pos), encoding: sv.getUint16(pos + 2), bytes: src.slice(off, off + length) });
+                }
+            }
+            if (!extra.length) return buffer;
+            const count = dv.getUint16(2), growth = extra.length * 8;
+            const result = new Uint8Array(dst.length + growth + extra.reduce((n, e) => n + e.bytes.length, 0));
+            result.set(dst.subarray(0, 4 + count * 8));
+            result.set(dst.subarray(4 + count * 8), 4 + count * 8 + growth);
+            const view = new DataView(result.buffer); view.setUint16(2, count + extra.length);
+            for (let i = 0; i < count; i++) view.setUint32(4 + i * 8 + 4, dv.getUint32(4 + i * 8 + 4) + growth);
+            let offset = dst.length + growth;
+            extra.forEach((entry, i) => {
+                const pos = 4 + (count + i) * 8;
+                view.setUint16(pos, entry.platform); view.setUint16(pos + 2, entry.encoding); view.setUint32(pos + 4, offset);
+                result.set(entry.bytes, offset); offset += entry.bytes.length;
+            });
+            return appendTables(buffer, [{ tag: 'cmap', data: result }]);
+        }
+        function validateGeneratedFont(buffer) {
+            const dv = new DataView(buffer);
+            if (buffer.byteLength < 12 || dv.getUint32(0) !== 0x00010000) throw new Error('导出结果不是标准 TTF');
+            const count = dv.getUint16(4), tags = new Set();
+            if (12 + count * 16 > buffer.byteLength) throw new Error('导出字体目录越界');
+            for (let i = 0; i < count; i++) {
+                const pos = 12 + i * 16, tag = String.fromCharCode(...new Uint8Array(buffer, pos, 4));
+                const offset = dv.getUint32(pos + 8), size = dv.getUint32(pos + 12);
+                if (tags.has(tag) || offset + size > buffer.byteLength || offset % 4) throw new Error(`导出字体的 ${tag} 表无效`);
+                tags.add(tag);
+            }
+            for (const tag of ['head','maxp','hhea','hmtx','cmap','loca','glyf']) if (!tags.has(tag)) throw new Error(`导出字体缺少 ${tag} 表`);
+            const maxp = readTableBytes(buffer, 'maxp'), head = readTableBytes(buffer, 'head'), loca = readTableBytes(buffer, 'loca'), glyf = readTableBytes(buffer, 'glyf');
+            const glyphCount = new DataView(maxp.buffer, maxp.byteOffset, maxp.byteLength).getUint16(4);
+            const long = new DataView(head.buffer, head.byteOffset, head.byteLength).getInt16(50) === 1;
+            const lv = new DataView(loca.buffer, loca.byteOffset, loca.byteLength), size = long ? 4 : 2;
+            if (loca.length < (glyphCount + 1) * size) throw new Error('导出字体的字形索引数量无效');
+            let previous = 0;
+            for (let i = 0; i <= glyphCount; i++) {
+                const offset = long ? lv.getUint32(i * 4) : lv.getUint16(i * 2) * 2;
+                if (offset < previous || offset > glyf.length) throw new Error('导出字体字形数据越界');
+                previous = offset;
+            }
+            const parsed = opentype.parse(buffer);
+            if (Object.values(parsed.tables.cmap.glyphIndexMap).some(id => id >= glyphCount)) throw new Error('导出字体字符映射越界');
+            parseColrCpalV0(buffer);
+            return buffer;
+        }
+        function finalizeGeneratedFont(buffer, source) {
+            const tables = [];
+            for (const tag of ['name','GSUB','GDEF','GPOS','kern','kerx','BASE','JSTF','MATH','STAT','meta','morx','mort','feat','trak']) {
+                const data = readTableBytes(source, tag); if (data) tables.push({ tag, data });
+            }
+            buffer = appendTables(buffer, tables);
+            buffer = preserveCmapVariations(buffer, source);
+            return validateGeneratedFont(buffer);
         }
 
         function loadCore() {
@@ -3226,24 +3352,26 @@
             const stream = new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'));
             return new Uint8Array(await new Response(stream).arrayBuffer());
         }
+        async function readVfPayloadResources() {
+            const manifestResponse = await fetch('./assets/vf-payload-manifest.json');
+            if (!manifestResponse.ok) throw new Error('VF 引擎资源清单加载失败');
+            const manifest = await manifestResponse.json();
+            const rawChunks = await Promise.all(manifest.map(async item => {
+                const response = await fetch('./assets/' + item.file);
+                if (!response.ok) throw new Error('VF 引擎资源加载失败：' + item.file);
+                return response.text();
+            }));
+            const payload = {};
+            manifest.forEach((item, index) => { payload[item.key] = (payload[item.key] || '') + rawChunks[index]; });
+            return payload;
+        }
         async function loadVfCompiler() {
             if (v5VfCompilerPromise) return v5VfCompilerPromise;
             v5VfCompilerPromise = (async () => {
                 v5VfExportNote('正在启动本地 VF 引擎（第一次约需几秒）…');
                 const node = $('vfPyPayload');
-                if (!node.textContent.trim()) {
-                    const manifestResponse = await fetch('./assets/vf-payload-manifest.json');
-                    if (!manifestResponse.ok) throw new Error('VF 引擎资源清单加载失败');
-                    const manifest = await manifestResponse.json();
-                    const rawChunks = await Promise.all(manifest.map(async item => {
-                        const response = await fetch('./assets/' + item.file);
-                        if (!response.ok) throw new Error('VF 引擎资源加载失败：' + item.file);
-                        return response.text();
-                    }));
-                    const payload = {};
-                    manifest.forEach((item, index) => { payload[item.key] = (payload[item.key] || '') + rawChunks[index]; });
-                    node.textContent = JSON.stringify(payload);
-                }
+                if (!node) throw new Error('VF 引擎载荷缺失');
+                if (!node.textContent.trim()) node.textContent = JSON.stringify(await readVfPayloadResources());
                 if (!node) throw new Error('VF 引擎载荷缺失，请重新打开页面');
                 let payload;
                 try { payload = JSON.parse(node.textContent); }
@@ -3444,9 +3572,18 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
             await runExport();
         }
 
+        let ordinaryExportBusy = false;
         async function runExport(options = {}) {
+            if (ordinaryExportBusy) { if (options.capture) throw new Error('已有导出任务正在处理'); return; }
+            ordinaryExportBusy = true;
+            const unlock = v5LockEditorForVfExport();
+            const sourceBuffer = state.fontBuffer;
+            try { return await runExportLocked(options, sourceBuffer); }
+            finally { ordinaryExportBusy = false; unlock(); }
+        }
+        async function runExportLocked(options = {}, sourceBuffer) {
             const btn = document.getElementById('exportTTFButton');
-            if (hasColorOnlyChanges()) logStatus('ℹ️ 检测到颜色/色相/亮度/对比度调整，导出时将写入字体', 'info');
+            if (hasColorOnlyChanges()) logStatus('ℹ️ 正在写入颜色调整', 'info');
 
             // 无修符、无可写几何调整：源 TTF 直接下载原字节；OTF 转 TTF
             if (!hasWritableAdjustments() && !options.forceRewrite) {
@@ -3460,7 +3597,7 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                     } else {
                         const core = await loadCore();
                         const editor = core.createFont(state.fontBuffer, { type: 'otf', hinting: true, kerning: true });
-                        const buffer = restoreOriginalNames(editor.write({ type: 'ttf', hinting: true, kerning: true }));
+                        const buffer = finalizeGeneratedFont(editor.write({ type: 'ttf', hinting: true, kerning: true }), sourceBuffer);
                         if (options.capture) return buffer;
                         downloadBuffer(buffer, `edited_${state.font.familyName || 'font'}.ttf`, 'font/ttf');
                         if (!options.quiet) logStatus('✅ OTF 已转换为 TTF 导出', 'success');
@@ -3503,23 +3640,23 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                 // 源字体自带的彩色表必须迁回：fonteditor-core 的 write() 只回写它认识的标准表，
                 // COLR/CPAL 一律丢弃，所以走写回分支的导出（含 VF 各母版）会把彩字整批退成黑色。
                 const srcGlyphCount = fontObject.glyf.length;
+                const artwork = ['sbix','SVG ','CBDT','CBLC','EBDT','EBLC'].filter(tag => readTableBytes(sourceBuffer, tag));
+                if (artwork.length && (state.glyphs.length || specificHasWritable() || state.global.size !== 48 || state.global.weight !== 400 || state.global.baseline !== 0 || hasColorOnlyChanges())) throw new Error(`当前字体包含 ${artwork.join('／')} 图像字形，无法同步修整图像与轮廓，请先使用普通轮廓字体`);
                 const srcColor = parseColrCpalV0(state.fontBuffer);
                 if (srcColor && srcColor.version !== 0) throw new Error(`当前字体使用 COLR v${srcColor.version} 彩色格式，本工具导出时会丢掉彩色图层（彩字会变黑），已停止；若只需要单色轮廓，请先换掉这些字符再导出`);
                 const presetColorEntries = srcColor?.version === 0 ? [...srcColor.entries.values()].map(e => ({ ...e, layerGlyphIds: [...e.layerGlyphIds], paletteIndices: [...e.paletteIndices] })) : [];
                 if (presetColorEntries.length && !srcColor.cpal) throw new Error('当前字体带 COLR 彩色记录但缺少 CPAL 调色板，已停止，避免写出坏彩色表');
                 const presetColorByBase = new Map(presetColorEntries.map(e => [e.baseGlyphId, e]));
-                // 自引用彩色记录（base 自己的图层就是自己，r14 那类）只算一次：几何计划里再套一遍会把 base 加粗两倍
-                const colorLayerIdsOf = entry => (entry?.layerGlyphIds || []).filter(lid => lid !== entry.baseGlyphId);
                 // 本次新写的彩色记录（修符彩图 / 颜色调整 / 彩色字符单独缩放）与源字体现有调色板一起在结尾合并落盘。
                 // 调色板按源顺序 1:1 复制，**每一块都复制**（CPAL 允许多套配色，色号在各板间同槽位对齐）：
                 // 源记录的 paletteIndex 因此继续有效，新颜色在每一板尾部同步追加，槽位不会错位。
                 const colrEntries = [];
                 const cpalPalettes = (srcColor?.cpal?.palettes?.length ? srcColor.cpal.palettes : [[]]).map(p => p.map(c => ({ ...c })));
                 const cpalIndexMap = new Map();
-                cpalPalettes[0].forEach((c, i) => { const key = `${c.r},${c.g},${c.b}`; if (!cpalIndexMap.has(key)) cpalIndexMap.set(key, i); });
+                cpalPalettes[0].forEach((c, i) => { const key = `${c.r},${c.g},${c.b},${c.a ?? 255}`; if (!cpalIndexMap.has(key) && cpalPalettes.every(p => p[i] && p[i].r === c.r && p[i].g === c.g && p[i].b === c.b && (p[i].a ?? 255) === (c.a ?? 255))) cpalIndexMap.set(key, i); });
                 // 登记一个新颜色并返回槽位号（各板同步追加，保证槽位对齐）
                 function cpalAddColor(color) {
-                    const key = `${color.r},${color.g},${color.b}`;
+                    const key = `${color.r},${color.g},${color.b},${color.a ?? 255}`;
                     let pi = cpalIndexMap.get(key);
                     if (pi === undefined) { pi = cpalPalettes[0].length; cpalPalettes.forEach(p => p.push({ ...color })); cpalIndexMap.set(key, pi); }
                     return pi;
@@ -3535,91 +3672,77 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                     size: gDefault.size, letterSpacing: gDefault.letterSpacing,
                     baseline: gDefault.baseline, weight: gDefault.weight
                 };
-                // 记录被复合字形引用的物理 glyf 索引，用于隔离指定调整
-                const referencedIndices = new Set();
-                for (const g of fontObject.glyf) if (g.glyfs) for (const c of g.glyfs) referencedIndices.add(c.glyphIndex);
-
-                function deepCloneGlyph(g) {
-                    const c = { ...g };
-                    if (Array.isArray(g.contours)) c.contours = g.contours.map(cont => cont.map(p => ({ ...p })));
-                    if (Array.isArray(g.glyfs)) c.glyfs = g.glyfs.map(component => ({ ...component }));
-                    if (Array.isArray(g.unicode)) c.unicode = [...g.unicode];
-                    return c;
-                }
-
-                const globalPlan = [];
-                const globalCompound = [];
-                const specificPlan = [];
-                fontObject.glyf.forEach((glyph, index) => {
-                    const codes = Array.isArray(glyph.unicode) ? glyph.unicode : (glyph.unicode === undefined ? [] : [glyph.unicode]);
-                    if (!codes.length || codes.some(cp => glyphTargets.has(cp))) return;
-                    const specCodes = codes.filter(cp => specByCp.has(cp));
-                    if (codes.some(cp => !specByCp.has(cp) && !excludeCodes.has(cp)) && globalGeometry) {
-                        if (glyph.compound) globalCompound.push(index);
-                        globalPlan.push(index);
-                    }
-                    for (const cp of specCodes) {
-                        const spec = specByCp.get(cp);
-                        const opts = { size: spec.size, letterSpacing: spec.letterSpacing, baseline: spec.baseline, weight: spec.weight };
-                        if (opts.size !== 48 || opts.letterSpacing !== 0 || opts.baseline !== 0 || opts.weight !== 400) specificPlan.push({ cp, index, opts });
-                    }
-                });
-
-                if (globalCompound.length) editor.getHelper().compound2simple(globalCompound);
-
+                // 先展开全部复合字形，再逐个处理：组件修改不会连带改变未选中的字符。
+                const compounds = fontObject.glyf.map((g, i) => g.compound ? i : -1).filter(i => i >= 0);
+                if (compounds.length) editor.getHelper().compound2simple(compounds);
+                const colorLayerIds = new Set(presetColorEntries.flatMap(e => e.layerGlyphIds).filter(i => !presetColorByBase.has(i)));
+                let adjustedCount = 0;
+                const originalCount = fontObject.glyf.length;
                 btn.textContent = '⏳ 应用字体调整...';
                 await new Promise(resolve => setTimeout(resolve, 0));
-                let adjustedCount = 0;
-                for (const index of globalPlan) {
-                    if (applyGlyphGeometry(fontObject.glyf[index], globalOpts, upm)) adjustedCount++;
-                    // 彩色图层字形没有 cmap 码点，上面这轮遍历看不到它们；不一起调就会「轮廓变、色块不变」（真机＝颜色边缘露出黑边）
-                    for (const lid of colorLayerIdsOf(presetColorByBase.get(index))) if (applyGlyphGeometry(fontObject.glyf[lid], globalOpts, upm)) adjustedCount++;
-                }
-                // 指定调整：共享/被引用字形先克隆隔离，再按需物化复合轮廓，避免污染依赖者。
-                for (const { cp, index, opts } of specificPlan) {
+                for (let index = 0; index < originalCount; index++) {
                     const glyph = fontObject.glyf[index];
-                    const multi = Array.isArray(glyph.unicode) && glyph.unicode.length > 1;
-                    let targetIndex = index;
-                    if (referencedIndices.has(index) || multi) {
-                        const clone = deepCloneGlyph(glyph);
-                        glyph.unicode = (glyph.unicode || []).filter(c => c !== cp);
-                        clone.unicode = [cp];
-                        targetIndex = fontObject.glyf.length;
-                        fontObject.glyf.push(clone);
+                    const codes = Array.isArray(glyph.unicode) ? [...glyph.unicode] : [];
+                    if (!codes.length) {
+                        // GSUB 生成的连字也参与全局修整；彩色层由 base 负责，不能重复变换。
+                        if (globalGeometry && !colorLayerIds.has(index) && applyGlyphGeometry(glyph, globalOpts, upm)) adjustedCount++;
+                        const preset = presetColorByBase.get(index);
+                        if (preset) {
+                            const layerGlyphIds = preset.layerGlyphIds.map(lid => {
+                                if (lid === index) return index;
+                                const layer = cloneFontGlyph(fontObject.glyf[lid]); layer.unicode = [];
+                                const id = fontObject.glyf.length; fontObject.glyf.push(layer);
+                                applyGlyphGeometry(layer, globalOpts, upm); return id;
+                            });
+                            colrEntries.push({ baseGlyphId: index, layerGlyphIds, paletteIndices: [...preset.paletteIndices] });
+                        }
+                        continue;
                     }
-                    if (fontObject.glyf[targetIndex].compound) editor.getHelper().compound2simple([targetIndex]);
-                    if (applyGlyphGeometry(fontObject.glyf[targetIndex], opts, upm)) adjustedCount++;
-                    // 彩色字符被单独调粗细/大小时：原地调就带上图层；克隆出新 base 时必须连图层一起克隆，
-                    // 否则那个码点上的字形没有彩色记录（或指向没同步缩放的旧图层）→ 色块与轮廓错位
-                    const preset = presetColorByBase.get(index);
-                    if (preset) {
-                        if (targetIndex === index) {
-                            for (const lid of colorLayerIdsOf(preset)) if (applyGlyphGeometry(fontObject.glyf[lid], opts, upm)) adjustedCount++;
-                        } else {
-                            // 自引用层指向新 base；其余图层克隆一份（并同缩），保证新记录指向的色块与轮廓同步
+                    const groups = new Map();
+                    for (const cp of codes) {
+                        const style = specByCp.has(cp) ? { ...GLOBAL_EXCLUDE_DEFAULTS, ...specByCp.get(cp) } : excludeCodes.has(cp) ? GLOBAL_EXCLUDE_DEFAULTS : gDefault;
+                        const key = glyphTargets.has(cp) ? 'repair' : JSON.stringify(['size','letterSpacing','weight','baseline','color','fine','brightness','hue'].map(k => style[k]));
+                        if (!groups.has(key)) groups.set(key, { codes: [], style, repair: key === 'repair' });
+                        groups.get(key).codes.push(cp);
+                    }
+                    if (groups.size > 1) assertSafeAliasSplit(sourceBuffer, codes);
+                    const original = cloneFontGlyph(glyph);
+                    let first = true;
+                    for (const group of groups.values()) {
+                        const targetIndex = first ? index : fontObject.glyf.length;
+                        const target = first ? glyph : cloneFontGlyph(original);
+                        if (!first) fontObject.glyf.push(target);
+                        first = false; target.unicode = group.codes;
+                        group.codes.forEach(cp => glyphIndexByCodePoint.set(cp, targetIndex));
+                        if (group.repair) continue;
+                        const preset = presetColorByBase.get(index);
+                        if (preset) {
+                            // 图层可能被多个彩字共用，每个 base 拷贝自己的层，避免重复缩放。
                             const layerGlyphIds = preset.layerGlyphIds.map(lid => {
                                 if (lid === index) return targetIndex;
-                                const layerClone = deepCloneGlyph(fontObject.glyf[lid]);
-                                layerClone.unicode = [];
-                                const cloneId = fontObject.glyf.length;
-                                fontObject.glyf.push(layerClone);
-                                applyGlyphGeometry(layerClone, opts, upm);
-                                return cloneId;
+                                const layer = cloneFontGlyph(fontObject.glyf[lid]); layer.unicode = [];
+                                const id = fontObject.glyf.length; fontObject.glyf.push(layer);
+                                applyGlyphGeometry(layer, group.style, upm); return id;
                             });
                             colrEntries.push({ baseGlyphId: targetIndex, layerGlyphIds, paletteIndices: [...preset.paletteIndices] });
                         }
+                        if (applyGlyphGeometry(target, group.style, upm)) adjustedCount++;
                     }
                 }
                 if (gDefault.lineHeight !== ADJUSTMENT_DEFAULTS.lineHeight) {
                     const ascent = fontObject.hhea?.ascent ?? Math.round(upm * 0.8);
                     const descent = Math.abs(fontObject.hhea?.descent ?? Math.round(upm * 0.2));
-                    const lineGap = Math.round((gDefault.lineHeight - 1) * (ascent + descent));
+                    const lineGap = Math.round(gDefault.lineHeight * upm - ascent - descent);
                     if (fontObject.hhea) fontObject.hhea.lineGap = lineGap;
-                    if (fontObject['OS/2']) fontObject['OS/2'].sTypoLineGap = lineGap;
+                    if (fontObject['OS/2']) {
+                        const os2 = fontObject['OS/2'];
+                        os2.sTypoLineGap = Math.round(gDefault.lineHeight * upm - os2.sTypoAscender + os2.sTypoDescender);
+                    }
                 }
                 if (adjustedCount > 0) logStatus(`✅ 已调整 ${adjustedCount} 个字形`, 'success');
 
                 let replaced = 0, added = 0;
+                const repairedGlyphIds = new Set();
                 const repairFailures = [];
                 for (const glyphData of state.glyphs) {
                     const char = singleCharacter(glyphData.char);
@@ -3646,16 +3769,10 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                         // VF 母版里，图片／修符字形固定在 400 档外观；否则不同图像轮廓无法保证点结构可插值。
                         const inheritedWeight = options.vfMaster ? (options.repairWeights?.get(codePoint) ?? 400) : (spec?.weight ?? (excludeCodes.has(codePoint) ? 400 : gDefault.weight));
                         applyGlyphGeometry(newGlyph, { size: 48, letterSpacing: 0, baseline: 0, weight: inheritedWeight }, upm);
-                        // 追加只映射目标码点的新 glyf，并从旧 glyf 移除该码点，保留旧索引供复合组件引用
-                        if (sourceGlyph) {
-                            sourceGlyph.unicode = (Array.isArray(sourceGlyph.unicode) ? sourceGlyph.unicode : []).filter(c => c !== codePoint);
-                            replaced++;
-                        } else {
-                            added++;
-                        }
-                        const newGlyphId = fontObject.glyf.length;
+                        sourceGlyph ? replaced++ : added++;
+                        const newGlyphId = installFontGlyph(fontObject, codePoint, newGlyph, sourceBuffer);
                         glyphIndexByCodePoint.set(codePoint, newGlyphId);
-                        fontObject.glyf.push(newGlyph);
+                        repairedGlyphIds.add(newGlyphId);
                         // 只有显式勾选“导出为彩图”的修符才写 COLR/CPAL（固定原色）；
                         // 未勾选的就是普通字形轮廓，阅读软件按当前字体颜色渲染它（跟随主题/夜览换色）。
                         // 历史教训：给纯黑修符写 COLR 记录都不行——0xFFFF 前景色索引在目标阅读软件整批不可见，
@@ -3702,18 +3819,19 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                     const coloredIdx = new Set();
                     for (const [ch, v] of Object.entries(state.specific)) {
                         if (!v || typeof v !== 'object') continue;
-                        if (!v.color || String(v.color).toLowerCase() === '#000000') continue;
-                        const c = hexToRgb(v.color);
+                        if (!v.color && v.fine === undefined && v.brightness === undefined && v.hue === undefined) continue;
+                        const c = hexToRgb(v.color || '#000000');
                         if (!c) continue;
                         const cp = ch.codePointAt(0);
                         // 彩图修符保留原色；普通修符/符号允许“指定颜色”生成固定色层。
                         if (glyphTargets.get(cp)?.exportAsColor) continue;
                         const idx = colorCpIndex.get(cp);
                         if (idx === undefined) continue;
-                        colorPlan.push({ index: idx, color: applyColorStyle(c, v.hue ?? 0, v.brightness ?? 100, v.fine ?? 50) });
+                        const effective = applyColorStyle(c, v.hue ?? 0, v.brightness ?? 100, v.fine ?? 50);
                         coloredIdx.add(idx);
+                        if (!colrEntries.some(e => e.baseGlyphId === idx) && (effective.r || effective.g || effective.b)) colorPlan.push({ index: idx, color: effective });
                     }
-                    if (gCol && gColorHex !== '#000000') {
+                    if (gCol && (gColorHex !== '#000000' || hasColorOnlyChanges())) {
                         const gStyle = applyColorStyle(gCol, state.global.hue ?? 0, state.global.brightness ?? 100, state.global.fine ?? 50);
                         fontObject.glyf.forEach((glyph, index) => {
                             const codes = Array.isArray(glyph.unicode) ? glyph.unicode : (glyph.unicode === undefined ? [] : [glyph.unicode]);
@@ -3721,7 +3839,7 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                             if (codes.some(cp => glyphTargets.has(cp))) return;
                             if (codes.some(cp => excludeCodes.has(cp))) return;   // 「排除」的字不上全局颜色
                             if (coloredIdx.has(index)) return;
-                            colorPlan.push({ index, color: gStyle });
+                            if (!colrEntries.some(e => e.baseGlyphId === index) && (gStyle.r || gStyle.g || gStyle.b)) colorPlan.push({ index, color: gStyle });
                             coloredIdx.add(index);
                         });
                     }
@@ -3735,6 +3853,18 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                     }
                 }
 
+                for (const entry of colrEntries) {
+                    if (entry.layerGlyphIds.length === 1 && entry.layerGlyphIds[0] === entry.baseGlyphId) continue;
+                    const cp = fontObject.glyf[entry.baseGlyphId]?.unicode?.[0];
+                    if (cp !== undefined && glyphTargets.has(cp)) continue;
+                    const style = specByCp.get(cp) || (excludeCodes.has(cp) ? GLOBAL_EXCLUDE_DEFAULTS : state.global);
+                    if ((style.hue ?? 0) === 0 && (style.brightness ?? 100) === 100 && (style.fine ?? 50) === 50) continue;
+                    entry.paletteIndices = entry.paletteIndices.map(pi => {
+                        const slot = cpalPalettes[0].length;
+                        for (const palette of cpalPalettes) palette.push(applyColorStyle(pi === 0xFFFF ? hexToRgb(style.color || '#000000') : palette[pi], style.hue ?? 0, style.brightness ?? 100, style.fine ?? 50));
+                        return slot;
+                    });
+                }
                 if (options.vfMaster) {
                     // TTF 单档导出有意保持原字宽；VF 需要各母版的 advance 跟着笔画粗细同步，
                     // 否则只有轮廓变、字距完全不变，HVAR 会成为空变化。图片修符继续固定在 400 档。
@@ -3756,6 +3886,8 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                 await new Promise(resolve => setTimeout(resolve, 0));
                 let buffer;
                 try {
+                    if (fontObject.glyf.length > 65535) throw new Error('字形数量超过 TTF 上限');
+                    if (options.vfMaster) for (const glyph of fontObject.glyf) delete glyph.instructions;
                     buffer = editor.write({ type: 'ttf', hinting: true, kerning: true });
                     buffer = appendTables(buffer, [{ tag: 'cmap', data: buildCmapTable(fontObject.glyf) }]);
                 } catch (_) {
@@ -3764,7 +3896,7 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                 const glyphGrew = fontObject.glyf.length > srcGlyphCount;
                 // 源字体自带记录 + 本次新写记录合并：同一 base 以本次新写为准（颜色调整会重写该 base 的那条记录）；
                 // 已经被摘掉最后一个码点的旧 base 不再有字符指向它，顺手清掉。重复 baseGlyphId 是非法 COLR 表，必须去重。
-                const mergedColorEntries = new Map(presetColorEntries.filter(e => (fontObject.glyf[e.baseGlyphId]?.unicode || []).length).map(e => [e.baseGlyphId, e]));
+                const mergedColorEntries = new Map(presetColorEntries.filter(e => !repairedGlyphIds.has(e.baseGlyphId)).map(e => [e.baseGlyphId, e]));
                 for (const entry of colrEntries) mergedColorEntries.set(entry.baseGlyphId, entry);
                 if (glyphGrew && readTableBytes(state.fontBuffer, 'sbix')) logStatus('ℹ️ 当前字体带 sbix 位图彩色，本次导出生成了新字形，位图彩色表无法随之保留（已跳过，避免渲染越界）', 'info');
                 const rawColorTables = v5RawColorTables(state.fontBuffer, new Set(['COLR', 'CPAL']), glyphGrew);
@@ -3775,7 +3907,8 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                     // 只有位图/矢量彩表（没有 COLR）的字体：原字节放回，别让 write() 把彩字整批丢掉
                     buffer = appendTables(buffer, rawColorTables);
                 }
-                buffer = restoreOriginalNames(buffer);   // 防漂移：内部名称按源字体原样回填（见 restoreOriginalNames 注释）
+                buffer = finalizeGeneratedFont(buffer, sourceBuffer);
+                if (state.fontBuffer !== sourceBuffer) throw new Error('字体已更换，旧导出任务已停止');
                 if (options.capture) return buffer;
                 downloadBuffer(buffer, `edited_${state.font.familyName || 'font'}.ttf`, 'font/ttf');
                 if (!options.quiet) logStatus(`✅ TTF导出成功！替换 ${replaced} 个，新增 ${added} 个，调整 ${adjustedCount} 个${colrEntries.length ? `，彩色分层 ${colrEntries.length} 个` : ''}`, 'success');
@@ -3835,6 +3968,8 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
         }
 
         function exportPreviewPNG() {
+            if (previewFrame) { cancelAnimationFrame(previewFrame); previewFrame = 0; }
+            renderAllNow();
             const canvas = previewMod;
             const link = document.createElement('a');
             link.download = 'modified_preview.png';
@@ -3848,6 +3983,13 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
         function normalizeNumber(v, fallback) {
             const n = Number(v);
             return Number.isFinite(n) ? n : fallback;
+        }
+
+        function normalizeControlNumber(key, value, fallback, glyph = false) {
+            const range = { size: [glyph ? 8 : 12,120], letterSpacing: [-10,30], weight: [100,2000], lineHeight: [.8,2.5], baseline: [-30,30], fine: [0,100], brightness: [0,200], hue: [0,360] }[key];
+            const n = Number(value);
+            if (!Number.isFinite(n) || (range && (n < range[0] || n > range[1]))) throw new Error(`配置中的 ${key} 超出允许范围`);
+            return n;
         }
 
         function normalizeGlyphConfig(g) {
@@ -3870,6 +4012,8 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                 isSymbol: Boolean(g.isSymbol),
                 exportAsColor: Boolean(g.exportAsColor)
             };
+            for (const key of ['size','letterSpacing','fine','brightness','hue']) glyph[key] = normalizeControlNumber(key, glyph[key], CTRL_DEFAULTS[key], true);
+            if (glyph.width <= 0 || glyph.height <= 0 || glyph.width > 16384 || glyph.height > 16384 || Math.abs(glyph.xOffset) > 4096 || Math.abs(glyph.yOffset) > 4096) throw new Error('修符尺寸或偏移超出允许范围');
             glyph.char = singleCharacter(glyph.char) || '';
             if (g.layers && typeof g.layers === 'object' && !Array.isArray(g.layers)) {
                 glyph.layers = {
@@ -3902,11 +4046,11 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                 const name = typeof parsed.font.name === 'string' && parsed.font.name ? parsed.font.name : `embedded-font.${type}`;
                 embeddedFont = { font, buffer, type, name };
             }
-            const global = { ...state.global };
+            const global = { ...GLOBAL_EXCLUDE_DEFAULTS, exclude: '' };
             if (parsed.global !== undefined) {
                 if (!parsed.global || typeof parsed.global !== 'object' || Array.isArray(parsed.global)) throw new Error('全局设置格式错误');
                 for (const k of ['size', 'letterSpacing', 'weight', 'lineHeight', 'baseline', 'fine', 'brightness', 'hue']) {
-                    if (parsed.global[k] !== undefined) global[k] = normalizeNumber(parsed.global[k], global[k]);
+                    if (parsed.global[k] !== undefined) global[k] = normalizeControlNumber(k, parsed.global[k], global[k]);
                 }
                 if (typeof parsed.global.color === 'string') global.color = parsed.global.color;
                 if (parsed.global.exclude !== undefined) {
@@ -3921,9 +4065,9 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                     if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('指定字符设置格式错误');
                     const cp = singleCharacter(ch);
                     if (!cp) continue;
-                    const entry = {};
+                    const entry = { ...GLOBAL_EXCLUDE_DEFAULTS };
                     for (const k of ['size', 'letterSpacing', 'weight', 'baseline', 'fine', 'brightness', 'hue']) {
-                        if (v[k] !== undefined) entry[k] = normalizeNumber(v[k], 0);
+                        if (v[k] !== undefined) entry[k] = normalizeControlNumber(k, v[k], CTRL_DEFAULTS[k]);
                     }
                     if (typeof v.color === 'string') entry.color = v.color;
                     specific[cp] = entry;
@@ -3949,7 +4093,7 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                     const num = $(slider.id + 'Num');
                     if (num) num.value = state.global[key];
                     const val = $(slider.id + 'Val');
-                    if (val) val.textContent = state.global[key];
+                    if (val) val.textContent = ctrlValText(key, state.global[key]);
                 }
             }
             if (state.global.color) {
@@ -3980,6 +4124,8 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
         function importConfigFile(event) {
             const file = event.target.files[0];
             if (!file) return;
+            const ticket = ++fontImportTicket;
+            if (file.size > 100 * 1024 * 1024) { event.target.value = ''; alert('配置超过 100MB，请减少内嵌图片后重试'); return; }
             const reader = new FileReader();
             reader.onload = async function(ev) {
                 try {
@@ -3994,6 +4140,8 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
                             await decodeImageDataURL(g.layers.extraData);
                         }
                     }
+                    if (ticket !== fontImportTicket) return;
+                    closeOriginEdit();
                     if (candidate.font) {
                         state.font = candidate.font.font;
                         state.fontBuffer = candidate.font.buffer;
@@ -4460,18 +4608,30 @@ out = BytesIO(); vf.save(out); open('/vf-output.ttf','wb').write(out.getvalue())
             applyTheme(_themes[0]);
             renderThemeGrid();
         }
-        function saveThemeToHtml() {
+        async function saveThemeToHtml() {
             const seed = JSON.stringify({ activeThemeId: _activeThemeId, themes: _themes }).replace(/</g, '\\u003c');
-            const selectedLocale = uiLocale;
-            setUiLanguage('zh-CN', false);
-            let html;
             try {
-                html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML.replace(/<script id="themeSeed" type="application\/json">[\s\S]*?<\/script>/, '<script id="themeSeed" type="application/json">' + seed + '</scr' + 'ipt>');
-            } finally {
-                setUiLanguage(selectedLocale, false);
-            }
-            downloadText(html, '字体编辑工具_完整修复版.html', 'text/html');
-            logStatus('✅ 已生成含当前配色的 HTML 文件，请用下载的文件替换旧文件', 'success');
+                // 工作区重排前的模板只含一套 DOM；不能序列化已运行的界面后再次执行初始化。
+                if (!window.fontStudioTemplate) throw new Error('页面模板尚未就绪，请重新打开页面');
+                const doc = new DOMParser().parseFromString(window.fontStudioTemplate, 'text/html');
+                logStatus('正在打包完整 HTML…', 'info');
+                for (const script of doc.querySelectorAll('script[src]')) {
+                    const response = await fetch(new URL(script.getAttribute('src'), document.baseURI));
+                    if (!response.ok) throw new Error('脚本资源加载失败');
+                    script.removeAttribute('src');
+                    script.textContent = (await response.text()).replace(/<\/script/gi, '<\\/script');
+                }
+                for (const link of doc.querySelectorAll('link[rel="stylesheet"]')) {
+                    const response = await fetch(new URL(link.getAttribute('href'), document.baseURI));
+                    if (!response.ok) throw new Error('样式资源加载失败');
+                    const style = doc.createElement('style'); style.textContent = await response.text(); link.replaceWith(style);
+                }
+                const payload = doc.getElementById('vfPyPayload');
+                if (payload && !payload.textContent.trim()) payload.textContent = JSON.stringify(await readVfPayloadResources()).replace(/</g, '\\u003c');
+                doc.getElementById('themeSeed').textContent = seed;
+                downloadText('<!DOCTYPE html>\n' + doc.documentElement.outerHTML, '字屿_完整字体工具.html', 'text/html');
+                logStatus('已生成包含当前配色、脚本和字体引擎的完整 HTML', 'success');
+            } catch (e) { logStatus(`HTML 打包失败：${e.message}`, 'error'); alert(`HTML 打包失败：${e.message}`); }
         }
         function downloadText(text, filename, mime) {
             const blob = new Blob([text], { type: mime });
